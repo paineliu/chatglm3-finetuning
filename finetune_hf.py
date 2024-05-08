@@ -1,13 +1,11 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+import os
+import jieba
 import dataclasses as dc
 import functools
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any, Optional, Union
-
-import jieba
 import numpy as np
 import ruamel.yaml as yaml
 import torch
@@ -78,7 +76,6 @@ class Seq2SeqTrainer(_Seq2SeqTrainer):
             ignore_keys=None,
             **gen_kwargs,
     ) -> tuple[Optional[float], Optional[torch.Tensor], Optional[torch.Tensor]]:
-
         if self.args.predict_with_generate:
             output_ids = inputs.pop('output_ids')
         input_ids = inputs['input_ids']
@@ -89,6 +86,21 @@ class Seq2SeqTrainer(_Seq2SeqTrainer):
         if self.args.predict_with_generate:
             labels = output_ids
         return loss, generated_tokens, labels
+    # For P-Tuning a new save_model function is fine for the prefix_encoder model
+    # but may cost problems for the whole model loading
+
+    # def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
+    #     if output_dir is None:
+    #         output_dir = self.args.output_dir
+    #     os.makedirs(output_dir, exist_ok=True)
+    #     ptuning_params = {k: v for k, v in self.model.transformer.prefix_encoder.state_dict().items()}
+    #
+    #     torch.save(ptuning_params, os.path.join(output_dir, 'pytorch_model.bin'))
+    #
+    #     print(f"P-Tuning model weights saved in {output_dir}")
+    #
+    #     if self.tokenizer is not None:
+    #         self.tokenizer.save_pretrained(output_dir)
 
 
 def _resolve_path(path: Union[str, Path]) -> Path:
@@ -151,7 +163,7 @@ class FinetuningConfig(object):
     max_output_length: int
 
     training_args: Seq2SeqTrainingArguments = dc.field(
-        default=Seq2SeqTrainingArguments(output_dir='./output')
+        default_factory=lambda: Seq2SeqTrainingArguments(output_dir='./output')
     )
     peft_config: Optional[PeftConfig] = None
 
@@ -361,10 +373,11 @@ def process_batch_eval(
     return {'input_ids': batched_input_ids, 'output_ids': batched_output_ids}
 
 
-# TODO: Not sure if this is necessary, can set it to half
-def _prepare_model_for_training(model: nn.Module):
+# Not sure if this is necessary, can set it to half.
+# If train with cpu, cast all params to fp32 instead of trainable ones.
+def _prepare_model_for_training(model: nn.Module, use_cpu: bool):
     for param in model.parameters():
-        if param.requires_grad:
+        if param.requires_grad or use_cpu:
             param.data = param.data.to(torch.float32)
 
 
@@ -375,19 +388,13 @@ def load_tokenizer_and_model(
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     if peft_config is not None:
         if peft_config.peft_type.name == "PREFIX_TUNING":
-            config = AutoConfig.from_pretrained(
-                model_dir,
-                trust_remote_code=True,
-                empty_init=False,
-                use_cache=False
-            )
+            config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
             config.pre_seq_len = peft_config.num_virtual_tokens
             config.use_cache = False
             model = AutoModelForCausalLM.from_pretrained(
                 model_dir,
                 trust_remote_code=True,
                 config=config,
-                empty_init=False
             )
         if peft_config.peft_type.name == "LORA":
             model = AutoModelForCausalLM.from_pretrained(
@@ -406,7 +413,6 @@ def load_tokenizer_and_model(
             use_cache=False
         )
     print_model_size(model)
-
     return tokenizer, model
 
 
@@ -443,6 +449,11 @@ def main(
             ),
         ],
         config_file: Annotated[str, typer.Argument(help='')],
+        auto_resume_from_checkpoint: str = typer.Argument(
+            default='',
+            help='If entered as yes, automatically use the latest save checkpoint. If it is a numerical example 12 15, use the corresponding save checkpoint. If the input is no, restart training'
+        ),
+
 ):
     ft_config = FinetuningConfig.from_file(config_file)
     tokenizer, model = load_tokenizer_and_model(model_dir, peft_config=ft_config.peft_config)
@@ -485,12 +496,12 @@ def main(
         print('test_dataset:', test_dataset)
 
     # checks encoded dataset
-    # _sanity_check(
-    #     train_dataset[0]["input_ids"], train_dataset[0]["labels"], tokenizer
-    # )
+    _sanity_check(
+        train_dataset[0]["input_ids"], train_dataset[0]["labels"], tokenizer
+    )
 
     # turn model to fp32
-    _prepare_model_for_training(model)
+    _prepare_model_for_training(model, ft_config.training_args.use_cpu)
 
     ft_config.training_args.generation_config.pad_token_id = (
         tokenizer.pad_token_id
@@ -501,6 +512,8 @@ def main(
         tokenizer.get_command('<|observation|>'),
     ]
     model.gradient_checkpointing_enable()
+    model.enable_input_require_grads()
+
     trainer = Seq2SeqTrainer(
         model=model,
         args=ft_config.training_args,
@@ -511,10 +524,42 @@ def main(
         ),
         train_dataset=train_dataset,
         eval_dataset=val_dataset.select(list(range(50))),
-        tokenizer=tokenizer,
+        tokenizer=tokenizer if ft_config.peft_config.peft_type != "LORA" else None,  # LORA does not need tokenizer
         compute_metrics=functools.partial(compute_metrics, tokenizer=tokenizer),
     )
-    trainer.train()
+
+    if auto_resume_from_checkpoint.upper() == "" or auto_resume_from_checkpoint is None:
+        trainer.train()
+    else:
+        output_dir = ft_config.training_args.output_dir
+        dirlist = os.listdir(output_dir)
+        checkpoint_sn = 0
+        for checkpoint_str in dirlist:
+            if checkpoint_str.find("eckpoint") > 0 and checkpoint_str.find("tmp") == -1:
+                checkpoint = int(checkpoint_str.replace("checkpoint-", ""))
+                if checkpoint > checkpoint_sn:
+                    checkpoint_sn = checkpoint
+        if auto_resume_from_checkpoint.upper() == "YES":
+            if checkpoint_sn > 0:
+                model.gradient_checkpointing_enable()
+                model.enable_input_require_grads()
+                checkpoint_directory = os.path.join(output_dir, "checkpoint-" + str(checkpoint_sn))
+                print("resume checkpoint from  checkpoint-" + str(checkpoint_sn))
+                trainer.train(resume_from_checkpoint=checkpoint_directory)
+            else:
+                trainer.train()
+        else:
+            if auto_resume_from_checkpoint.isdigit():
+                if int(auto_resume_from_checkpoint) > 0:
+                    checkpoint_sn = int(auto_resume_from_checkpoint)
+                    model.gradient_checkpointing_enable()
+                    model.enable_input_require_grads()
+                    checkpoint_directory = os.path.join(output_dir, "checkpoint-" + str(checkpoint_sn))
+                    print("resume checkpoint from  checkpoint-" + str(checkpoint_sn))
+                    trainer.train(resume_from_checkpoint=checkpoint_directory)
+            else:
+                print(auto_resume_from_checkpoint,
+                      "The specified checkpoint sn(" + auto_resume_from_checkpoint + ") has not been saved. Please search for the correct chkeckpoint in the model output directory")
 
     # test stage
     if test_dataset is not None:
