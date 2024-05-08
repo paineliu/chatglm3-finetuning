@@ -32,19 +32,19 @@ for each in f:
             val_data.append(data)
         line_total += 1    
 
-f = open("./data/train.jsonl",'w',encoding='utf-8')
+f = open("./data/train.json",'w',encoding='utf-8')
 for each in train_data:
     item = json.dumps(each, ensure_ascii=False)
     f.write("{}\n".format(item))
 f.close()
 
-f = open("./data/test.jsonl",'w',encoding='utf-8')
+f = open("./data/test.json",'w',encoding='utf-8')
 for each in test_data:
     item = json.dumps(each, ensure_ascii=False)
     f.write("{}\n".format(item))
 f.close()
 
-f = open("./data/val.jsonl",'w',encoding='utf-8')
+f = open("./data/dev.json",'w',encoding='utf-8')
 for each in val_data:
     item = json.dumps(each, ensure_ascii=False)
     f.write("{}\n".format(item))
