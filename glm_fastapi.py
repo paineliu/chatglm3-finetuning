@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from chatedu_engine import ChatEdu
+from nlsql import NL2SQL
 
 import argparse
 
@@ -25,10 +25,10 @@ def parse_args():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load resources
-    global g_chatEdu
+    global g_nl2sql
     print('liftspan', 'start...')
     args = parse_args()
-    g_chatEdu = ChatEdu()
+    g_nl2sql = NL2SQL('./output/sql_merge')
     print('liftspan', 'finish.')
     yield
     # Clean up and release resources
@@ -41,39 +41,9 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
     print(f"The parameter is incorrect. {request.method} {request.url}")
     return JSONResponse({"code": "400", "message": exc.errors()})
 
-class MessageItem(BaseModel):
-    role:str
-    content:str
 
-class RespondItemModel(BaseModel):
-    index: int
-    message: MessageItem
-    finish_reason: str = "stop"
-
-class LessonInfo(BaseModel):
-    book_name:str
-    lesson_type:str
-    lesson_level:str
-    
-class ExamInfo(BaseModel):
-    exam_type:str
-    exam_level:str
-    
-class ChatContext(BaseModel):
-    user_id:str
-    lessonInfo:LessonInfo = None
-    examInfo:ExamInfo = None
-    quiz:str
-    focus_item:str
-
-class ChatModel(BaseModel):
-    modal: str = ''
-    token: str
-    context:ChatContext = None
-    messages:list[MessageItem]
-    n: int = 5
-    top_p: float = 1.0
-    stream: bool = False
+class Nl2SqlModel(BaseModel):
+    text: str
 
 class TokenModel(BaseModel):
     userName: str = ''
@@ -87,56 +57,34 @@ class ResondData(BaseModel):
     id: str = "chatcmpl-123"
     obj: str = "chat.completion"
     created: int = 1677652288
-    result: MessageItem
-    choices: List[RespondItemModel]
-    usage: UsageModel
+    result: str
 
 class RespondModel(BaseModel):
     code:int = 0
     message:str = "OK"
     data:ResondData
 
-class AnswerItem(BaseModel):
-    type:str
-    val:str
 
-class RecordItem(BaseModel):
-    begin:str
-    end:str
-    operator:str
-    item_id:str
-    answer:str
-
-class AnswerMode(BaseModel):
-    exam_id:str
-    student_id:str
-    begin_time:str
-    finish_time:str
-    items:List[AnswerItem]
-    record:List[RecordItem]
-
-    
-@app.post("/getToken")
-async def getToken(tokenModel: TokenModel):    
-    print('{} {}'.format(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), tokenModel.model_dump()))
+@app.post("/nl2sql")
+async def nl2sql(charRequestModel: Nl2SqlModel):    
+    print('{} {}'.format(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), charRequestModel.model_dump()), end=' ')
     start = time.time()
-    respond = g_chatEdu.getToken(tokenModel.model_dump())
+    result = g_nl2sql.sql(charRequestModel.model_dump())
     end = time.time()
+    print(end-start)
+    return result
 
-    return respond
-
-
-@app.post("/chat")
-async def exam_chat(charRequestModel: ChatModel):    
-    print('{} {}'.format(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), charRequestModel.model_dump()))
+@app.post("/nl2bcc")
+async def nl2bcc(charRequestModel: Nl2SqlModel):    
+    print('{} {}'.format(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), charRequestModel.model_dump()), end=' ')
     start = time.time()
-    respond = g_chatEdu.chat(charRequestModel.model_dump())
+    result = g_nl2sql.bcc(charRequestModel.model_dump())
     end = time.time()
-
-    return respond
+    print(end-start)
+    return result
 
 
 if __name__ == "__main__":
     args = parse_args()
-    print('chatedu_fastapi server', 'port = {}, worker = {}.'.format(args.port, args.workers))
-    uvicorn.run(app='chatedu_fastapi:app', host='0.0.0.0', log_level='warning', port=args.port, workers=args.workers, reload=False)
+    print('glm_fastapi server', 'port = {}, worker = {}.'.format(args.port, args.workers))
+    uvicorn.run(app='glm_fastapi:app', host='0.0.0.0', log_level='warning', port=args.port, workers=args.workers, reload=False)

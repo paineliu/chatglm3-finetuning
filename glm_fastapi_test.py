@@ -11,21 +11,21 @@ def jss_post(ip, port, path, query):
     except:
         return ""
     
-def test(ip, port):
+def test_sql(ip, port):
     
     query_json = {}
-    query_json['userName'] = 'blcu'
-    ret = jss_post(ip, port, 'getToken', json.dumps(query_json))
-    print(ret)
-    ret = json.loads(ret)
-    query_json = {}
-    query_json['token'] = ret['data']
-    query_json['messages'] = [{'content':'文化','role':'user'}]
-    ret = jss_post(ip, port, 'chat', json.dumps(query_json))
+    query_json['text'] = '字表中字为"挣"的所有信息。'
+    ret = jss_post(ip, port, 'nl2sql', json.dumps(query_json))
     print(ret)
     print()
 
+def test_bcc(ip, port, text):
+    query_json = {}
+    query_json['text'] = text
+    ret = jss_post(ip, port, 'nl2bcc', json.dumps(query_json))
+    print(ret)
+    print()
 
 if __name__ == "__main__":
-    test('202.112.194.54', '8102')
-    # test('127.0.0.1', '8102')
+    # test_sql('127.0.0.1', '8102')
+    test_bcc('127.0.0.1', '8102', "昨天\"加任意一个或者多个字加\"唱歌\"加任意一个或者多个字，并且以标点符号结尾")
