@@ -64,6 +64,14 @@ class RespondModel(BaseModel):
     message:str = "OK"
     data:ResondData
 
+@app.post("/chat")
+async def chat(charRequestModel: Nl2SqlModel):    
+    print('{} {}'.format(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), charRequestModel.model_dump()), end=' ')
+    start = time.time()
+    result = g_nl2sql.chat(charRequestModel.model_dump())
+    end = time.time()
+    print(end-start)
+    return result
 
 @app.post("/nl2sql")
 async def nl2sql(charRequestModel: Nl2SqlModel):    

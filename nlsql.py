@@ -84,7 +84,15 @@ class NL2SQL():
         respond['result'] = response
         return respond
 
-
+    def chat(self, request):
+        respond = {}
+        nl = request['text']
+        prompt = "{}{}".format("你的身份是汉语教师，请回答下述问题：\n", nl)
+        
+        response, _ = self.model.chat(self.tokenizer, prompt)
+        respond['result'] = response
+        return respond
+    
 if __name__ == "__main__":
 
     nlsql = NL2SQL('./output/sql_merge')
